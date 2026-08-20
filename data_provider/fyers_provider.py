@@ -180,7 +180,7 @@ class FyersProvider(DataProvider):
             if isinstance(res, dict) and res.get("s") == "ok":
                 candles = res.get("candles", [])
                 if candles:
-                    df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                    df = pd.DataFrame(candles, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
                     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
                     df.set_index("timestamp", inplace=True)
                     return df
@@ -206,7 +206,7 @@ class FyersProvider(DataProvider):
             if isinstance(res, dict) and res.get("s") == "ok":
                 candles = res.get("candles", [])
                 if candles:
-                    df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                    df = pd.DataFrame(candles, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
                     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
                     df.set_index("timestamp", inplace=True)
                     return df
@@ -272,7 +272,7 @@ class FyersProvider(DataProvider):
                             bid_price=bid,
                             bid_qty=tot_bid // 5 if tot_bid else 0,
                             ask_price=ask,
-                            ask_qty=tot_ask // 5 if tot_ask_qty else 0,
+                            ask_qty=tot_ask // 5 if tot_ask else 0,
                             total_bid_qty=tot_bid,
                             total_ask_qty=tot_ask,
                             timestamp=datetime.now().strftime("%H:%M:%S")

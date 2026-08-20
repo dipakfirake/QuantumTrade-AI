@@ -27,18 +27,25 @@ def generate_training_data(symbols: List[str],
     Generate labeled training data from historical OHLCV data.
 
     For each symbol:
-    1. Download historical OHLCV (6mo, 1h candles)
+    1. Download historical OHLCV (6mo, 1h candles) — preferring Fyers API
     2. Compute SMMA(20) and SMMA(120)
     3. Detect all crossovers
     4. Label each crossover: 1=profitable, 0=unprofitable
     5. Extract features at each crossover
     """
-    import yfinance as yf
     # Use history cache to avoid repeated downloads
     try:
         from data_provider.history_cache import get_historical as _get_cached_historical
     except Exception:
         _get_cached_historical = None
+
+    # If no provider given, try to get Fyers provider
+    if provider is None:
+        try:
+            from data_provider import get_data_provider
+            provider = get_data_provider()
+        except Exception:
+            pass
 
     all_rows = []
     detector = CrossoverDetector()
@@ -46,30 +53,35 @@ def generate_training_data(symbols: List[str],
     for i, symbol in enumerate(symbols):
         logger.info(f"Processing {symbol} ({i + 1}/{len(symbols)})...")
         try:
-            # Prefer provider if given (allows broker historical endpoints)
+            df = None
+
+            # Primary: Use Fyers/broker provider
             if provider is not None:
                 try:
                     df = provider.get_historical_ohlcv(symbol, interval=config.HISTORICAL_INTERVAL,
                                                        period=config.HISTORICAL_PERIOD)
                 except Exception:
                     df = None
-            else:
-                df = None
 
-            # Fallback to cached download if provider didn't return data
+            # Secondary: Use history cache
             if (df is None or (hasattr(df, 'empty') and df.empty)):
                 if _get_cached_historical is not None:
                     df = _get_cached_historical(symbol, interval=config.HISTORICAL_INTERVAL,
                                                  period=config.HISTORICAL_PERIOD, ttl_hours=24)
-                if df is None or (hasattr(df, 'empty') and df.empty):
-                    try:
-                        ticker = yf.Ticker(f"{symbol}.NS")
-                        df = ticker.history(
-                            period=config.HISTORICAL_PERIOD,
-                            interval=config.HISTORICAL_INTERVAL,
-                        )
-                    except Exception:
-                        df = None
+
+            # Last resort fallback: yfinance (if installed)
+            if df is None or (hasattr(df, 'empty') and df.empty):
+                try:
+                    import yfinance as yf
+                    ticker = yf.Ticker(f"{symbol}.NS")
+                    df = ticker.history(
+                        period=config.HISTORICAL_PERIOD,
+                        interval=config.HISTORICAL_INTERVAL,
+                    )
+                except ImportError:
+                    logger.debug(f"yfinance not available, skipping {symbol}")
+                except Exception:
+                    df = None
 
             if df is None or len(df) < config.SMMA_LONG + 10:
                 logger.debug(f"Insufficient historical bars for {symbol}")
@@ -109,7 +121,10 @@ def generate_training_data(symbols: List[str],
                 else:
                     pnl = entry_price - exit_price
 
-                label = 1 if pnl > 0 else 0
+                # Use relative PnL threshold: losses smaller than 0.3% of entry
+                # are considered "acceptable" (noise/slippage tolerance)
+                pnl_pct = (pnl / entry_price * 100) if entry_price > 0 else 0.0
+                label = 1 if pnl_pct > -0.3 else 0
 
                 # Extract features at the crossover point
                 features = extract_features_historical(
@@ -122,6 +137,7 @@ def generate_training_data(symbols: List[str],
                     "entry_price": entry_price,
                     "exit_price": exit_price,
                     "pnl": pnl,
+                    "pnl_pct": pnl_pct,
                     "label": label,
                     "timestamp": cross.timestamp,
                 }
@@ -133,6 +149,16 @@ def generate_training_data(symbols: List[str],
             continue
 
     df_training = pd.DataFrame(all_rows)
+
+    # Balance classes: downsample majority to max 2:1 ratio
+    if len(df_training) > 0 and "label" in df_training.columns:
+        pos = df_training[df_training["label"] == 1]
+        neg = df_training[df_training["label"] == 0]
+        if len(neg) > 2 * len(pos) and len(pos) > 0:
+            neg_downsampled = neg.sample(n=min(len(neg), 2 * len(pos)), random_state=42)
+            df_training = pd.concat([pos, neg_downsampled]).sort_index()
+            logger.info(f"Balanced classes: {len(pos)} positive, {len(neg_downsampled)} negative (from {len(neg)})")
+
     logger.info(f"Generated {len(df_training)} training samples from {len(symbols)} symbols")
 
     # Save training data

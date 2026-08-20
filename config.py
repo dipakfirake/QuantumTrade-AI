@@ -39,7 +39,7 @@ NSE_BATCH_SIZE = 50                # Number of symbols per scan batch
 # --- ML Model ---
 ML_MODEL_PATH = "ml_model/model.pkl"
 ML_SCALER_PATH = "ml_model/scaler.pkl"
-ML_CONFIDENCE_THRESHOLD = 0.55     # Minimum confidence to ACCEPT a trade
+ML_CONFIDENCE_THRESHOLD = 0.29     # Optimal threshold (F1=0.90, Precision=89%) for Fyers-trained model
 TRAINING_DATA_PATH = "data/historical_crossovers.csv"
 
 # --- Trade Log ---
