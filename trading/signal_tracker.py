@@ -136,6 +136,7 @@ class SignalTracker:
                 "total_pnl": 0.0,
                 "ml_accepted_wins": 0,
                 "ml_avoided_losses": 0,
+                "open_positions": len(self._open_trades),
             }
 
         winners = [t for t in self._trade_history if t.pnl and t.pnl > 0]

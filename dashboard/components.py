@@ -89,10 +89,14 @@ def render_screening_table(df: pd.DataFrame):
         signal = row.get("Signal", "—")
         if signal == "BUY":
             signal_html = '<span class="signal-buy">▲ BUY</span>'
+        elif signal == "BULLISH":
+            signal_html = '<span class="signal-buy">▲ BULLISH</span>'
         elif signal == "SELL":
             signal_html = '<span class="signal-sell">▼ SELL</span>'
+        elif signal == "BEARISH":
+            signal_html = '<span class="signal-sell">▼ BEARISH</span>'
         else:
-            signal_html = '<span class="signal-none">—</span>'
+            signal_html = '<span class="signal-none">NEUTRAL</span>'
 
         ml_pred = row.get("ML_Prediction", "")
         if ml_pred == "ACCEPT":

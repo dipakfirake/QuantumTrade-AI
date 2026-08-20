@@ -25,8 +25,8 @@ class CrossoverSignal:
     ltp: float                      # LTP at crossover
     smma_short: float               # SMMA(20) value
     smma_long: float                # SMMA(120) value
-    smma_gap_pct: float             # Gap as percentage
-    bar_index: int                  # Index in the series where crossover happened
+    smma_gap_pct: float = 0.0       # Gap as percentage
+    bar_index: int = 0              # Index in the series where crossover happened
     timestamp: Optional[str] = None
 
 

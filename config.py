@@ -14,7 +14,7 @@ SMMA_SHORT = 20         # Fast SMMA period
 SMMA_LONG = 120         # Slow SMMA period
 
 # --- Dashboard ---
-REFRESH_INTERVAL_MS = 60000    # Auto-refresh interval (milliseconds)
+REFRESH_INTERVAL_MS = 300000    # Auto-refresh interval (milliseconds)
 
 # --- Time Windows (minutes) ---
 ETQ_WINDOWS = [5, 20, 60]          # ETQ aggregation windows
@@ -22,7 +22,7 @@ AVG_LTP_WINDOWS = [20, 60]         # Average LTP windows
 LTQ_WINDOWS = [2, 5, 20]           # LTQ averaging windows for ML features
 
 # --- Data Source ---
-YFINANCE_INTERVAL = "1m"           # Intraday candle interval
+YFINANCE_INTERVAL = "5m"           # Intraday candle interval (5m gives 375 candles in 5d for SMMA 120)
 YFINANCE_PERIOD = "5d"             # Lookback period for intraday data
 YFINANCE_HISTORY_PERIOD = "6mo"    # Historical period for ML training
 YFINANCE_HISTORY_INTERVAL = "1h"   # Historical candle interval for ML training
@@ -45,3 +45,16 @@ RSI_PERIOD = 14
 
 # --- ATR ---
 ATR_PERIOD = 14
+
+# --- ETQ / Provider Mode ---
+# Options: "broker" (use broker API for true LTQ/ETQ),
+#          "proxy"  (derive LTQ from minute-volume deltas via Yahoo Finance),
+#          "sim"    (pure simulation - only for offline demos)
+ETQ_MODE = "proxy"
+
+# If True, expect a configured broker connector and API keys (Fyers/AngelOne).
+USE_BROKER_ETQ = False
+
+# Scan scope: "NIFTY500" (fast demo) or "FULL_NSE" (all symbols)
+SCAN_SCOPE = "NIFTY500"
+

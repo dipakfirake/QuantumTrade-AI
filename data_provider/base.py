@@ -59,7 +59,7 @@ class DataProvider(ABC):
         ...
 
     @abstractmethod
-    def get_quotes_batch(self, symbols: List[str]) -> List[Quote]:
+    def get_quotes_batch(self, symbols: List[str], progress_callback=None) -> List[Quote]:
         """Fetch quotes for multiple symbols (with rate limiting)."""
         ...
 

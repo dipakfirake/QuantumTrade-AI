@@ -34,6 +34,11 @@ def generate_training_data(symbols: List[str],
     5. Extract features at each crossover
     """
     import yfinance as yf
+    # Use history cache to avoid repeated downloads
+    try:
+        from data_provider.history_cache import get_historical as _get_cached_historical
+    except Exception:
+        _get_cached_historical = None
 
     all_rows = []
     detector = CrossoverDetector()
@@ -41,12 +46,30 @@ def generate_training_data(symbols: List[str],
     for i, symbol in enumerate(symbols):
         logger.info(f"Processing {symbol} ({i + 1}/{len(symbols)})...")
         try:
-            ticker = yf.Ticker(f"{symbol}.NS")
-            df = ticker.history(
-                period=config.YFINANCE_HISTORY_PERIOD,
-                interval=config.YFINANCE_HISTORY_INTERVAL,
-            )
+            # Prefer provider if given (allows broker historical endpoints)
+            if provider is not None:
+                try:
+                    df = provider.get_historical_ohlcv(symbol, interval=config.YFINANCE_HISTORY_INTERVAL,
+                                                       period=config.YFINANCE_HISTORY_PERIOD)
+                except Exception:
+                    df = None
+            else:
+                df = None
+
+            # Fallback to cached yfinance download if provider didn't return data
+            if (df is None or (hasattr(df, 'empty') and df.empty)):
+                if _get_cached_historical is not None:
+                    df = _get_cached_historical(symbol, interval=config.YFINANCE_HISTORY_INTERVAL,
+                                                 period=config.YFINANCE_HISTORY_PERIOD, ttl_hours=24)
+                if df is None or (hasattr(df, 'empty') and df.empty):
+                    ticker = yf.Ticker(f"{symbol}.NS")
+                    df = ticker.history(
+                        period=config.YFINANCE_HISTORY_PERIOD,
+                        interval=config.YFINANCE_HISTORY_INTERVAL,
+                    )
+
             if df is None or len(df) < config.SMMA_LONG + 10:
+                logger.debug(f"Insufficient historical bars for {symbol}")
                 continue
 
             df = df.rename(columns={

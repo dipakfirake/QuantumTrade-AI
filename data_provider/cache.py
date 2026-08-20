@@ -42,11 +42,28 @@ class TickCache:
         """
         now = time.time()
 
-        # Estimate LTQ from volume change if not provided directly
-        if ltq == 0 and symbol in self._prev_volume:
-            delta = volume - self._prev_volume[symbol]
-            ltq = max(delta, 0)
+        # Estimate LTQ from volume information if not provided directly.
+        # Many public APIs (yfinance) provide per-bar volume (volume traded during the bar),
+        # while some broker APIs return cumulative daily volume. Handle both cases:
+        # - If previous volume exists and current volume >= previous -> assume cumulative, use delta
+        # - If current volume < previous -> assume per-bar volume, use current volume directly
+        if ltq == 0:
+            prev = self._prev_volume.get(symbol)
+            if prev is None:
+                # No previous volume: conservatively treat provided volume as per-bar LTQ
+                ltq = max(volume, 0)
+            else:
+                try:
+                    if volume >= prev:
+                        delta = volume - prev
+                        ltq = max(delta, 0)
+                    else:
+                        # Likely per-bar volume value (not cumulative)
+                        ltq = max(volume, 0)
+                except Exception:
+                    ltq = max(volume, 0)
 
+        # Store the raw volume value for next delta computation
         self._prev_volume[symbol] = volume
 
         snap = TickSnapshot(
