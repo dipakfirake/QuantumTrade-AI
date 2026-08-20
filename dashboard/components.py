@@ -363,3 +363,63 @@ def render_pnl_chart(trades: List[dict]):
         margin=dict(l=20, r=20, t=50, b=20),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+
+def render_strategy_comparison(trades: List[dict]):
+    """Render side-by-side performance comparison: Raw SMMA vs ML-Filtered."""
+    from ml_model.evaluator import evaluate_strategy_performance
+    
+    df = pd.DataFrame(trades)
+    metrics = evaluate_strategy_performance(df)
+    raw = metrics["raw_strategy"]
+    ml = metrics["ml_filtered_strategy"]
+    avoid = metrics["loss_avoidance"]
+
+    st.markdown("### 📊 Strategy Performance: Baseline (Raw SMMA) vs ML-Filtered")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Baseline (Raw SMMA)</div>
+            <div class="metric-value" style="color:#94a3b8">{raw['win_rate_pct']}%</div>
+            <div style="font-size:0.8rem;color:#64748b">
+                Trades: {raw['total_trades']} | P&L: ₹{raw['total_pnl']:+,.2f}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card" style="border:1px solid rgba(52,211,153,0.4)">
+            <div class="metric-label" style="color:#34d399">ML-Filtered (ACCEPT Only)</div>
+            <div class="metric-value" style="color:#34d399">{ml['win_rate_pct']}%</div>
+            <div style="font-size:0.8rem;color:#34d399">
+                Trades: {ml['total_trades']} | P&L: ₹{ml['total_pnl']:+,.2f} (+{ml['win_rate_improvement_pct']}%)
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col3:
+        st.markdown(f"""
+        <div class="metric-card" style="border:1px solid rgba(167,139,250,0.4)">
+            <div class="metric-label" style="color:#a78bfa">Loss Avoidance (AVOID Signals)</div>
+            <div class="metric-value" style="color:#a78bfa">₹{avoid['capital_saved']:,.2f}</div>
+            <div style="font-size:0.8rem;color:#a78bfa">
+                Avoided: {avoid['avoided_trades']} | Saved Capital
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def render_walk_forward_table():
+    """Render walk-forward session comparison table."""
+    from ml_model.evaluator import generate_walk_forward_evaluation
+    
+    wf_df = generate_walk_forward_evaluation()
+    if not wf_df.empty:
+        st.markdown("### 📅 Next-Day / Session-by-Session Walk-Forward Evaluation")
+        st.dataframe(wf_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Continuous evaluation active: Trades are logged across sessions for next-day comparison.")
+

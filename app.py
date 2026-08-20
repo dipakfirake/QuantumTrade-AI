@@ -26,7 +26,7 @@ from dashboard.styles import inject_css
 from dashboard.components import (
     render_header, render_metrics, render_screening_table,
     render_signal_cards, render_trade_log, render_feature_importance,
-    render_pnl_chart,
+    render_pnl_chart, render_strategy_comparison, render_walk_forward_table,
 )
 from data_provider import get_data_provider
 from data_provider.cache import TickCache
@@ -541,45 +541,57 @@ with tab3:
 with tab4:
     st.markdown("""
     <div class="section-header">
-        <h2>🧠 ML Model Performance</h2>
-        <span class="badge">XGBoost Classifier</span>
+        <h2>🧠 ML Model Performance & Walk-Forward Evaluation</h2>
+        <span class="badge">XGBoost Institutional Engine</span>
     </div>
     """, unsafe_allow_html=True)
+
+    # 1. Comparative Strategy Evaluation: Baseline vs ML
+    trades = st.session_state.signal_tracker.get_trade_history()
+    trade_dicts = [
+        {
+            "symbol": t.symbol,
+            "signal_type": t.signal_type.value,
+            "entry_ltp": t.entry_ltp,
+            "entry_time": t.entry_time,
+            "exit_ltp": t.exit_ltp or 0,
+            "exit_time": t.exit_time or "",
+            "pnl": t.pnl or 0,
+            "ml_prediction": t.ml_prediction,
+            "ml_confidence": t.ml_confidence,
+            "timestamp": t.entry_time,
+        }
+        for t in trades
+    ]
+    render_strategy_comparison(trade_dicts)
+
+    st.markdown("---")
 
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("### Feature Importance")
+        st.markdown("### Feature Importance (Order Flow & LTQ)")
         importance = st.session_state.predictor.get_feature_importance()
         render_feature_importance(importance)
 
     with col2:
-        st.markdown("### Model Info")
+        st.markdown("### ML Architecture & Microstructure Signals")
         if st.session_state.predictor.is_loaded:
-            st.success("Model Status: **Loaded & Active**")
+            st.success("Model Status: **Fyers-Trained XGBoost Active**")
             st.markdown(f"""
-            - **Algorithm**: XGBoost (Gradient Boosted Trees)
-            - **Features**: {len(importance)} quantitative features
-            - **Key Features**: LTQ ratios, ETQ acceleration, bid-ask imbalance
+            - **Algorithm**: XGBoost (Gradient Boosted Decision Trees)
+            - **Features**: {len(importance)} quantitative order flow features
+            - **Primary LTQ Parameter**: `ltq_ratio_2m_5m` (Surge ratio in trade direction)
+            - **Order Book Imbalance**: `bid_ask_imbalance` (Total Bid vs Ask volume)
+            - **Execution Acceleration**: `etq_acceleration` (5m vs 20m pace)
             - **Confidence Threshold**: {config.ML_CONFIDENCE_THRESHOLD:.0%}
-
-            **Why XGBoost?**
-            - Excellent for tabular financial data
-            - Handles feature interactions naturally
-            - Fast inference for real-time predictions
-            - Built-in feature importance for explainability
             """)
         else:
             st.warning("Model not trained. Click 'Train Model' in the sidebar.")
-            st.markdown("""
-            **Using Rule-Based Fallback:**
-            The system uses a rule-based prediction engine until the ML model is trained.
-            Rules are based on:
-            - LTQ surge patterns (2min vs 5min)
-            - Volume confirmation
-            - Bid-ask alignment with signal direction
-            - RSI overbought/oversold conditions
-            """)
+
+    # 2. Next-Day Walk Forward Session Table
+    st.markdown("---")
+    render_walk_forward_table()
 
     # SMMA Crossover Logic explanation
     st.markdown("---")
