@@ -79,6 +79,7 @@ class CrossoverPredictor:
         self.scaler = None
         self.feature_names = FEATURE_NAMES
         self._loaded = False
+        self.load_model()
 
     def load_model(self) -> bool:
         """Load the trained model and scaler from disk."""
@@ -128,13 +129,14 @@ class CrossoverPredictor:
             return self._rule_based_prediction(features, signal_type)
 
         try:
-            # Prepare feature vector
-            X = np.array([[features.get(f, 0.0) for f in self.feature_names]])
-            X = np.nan_to_num(X, nan=0.0, posinf=1e6, neginf=-1e6)
-            X_scaled = self.scaler.transform(X)
+            # Prepare feature vector with column names
+            import pandas as pd
+            X_df = pd.DataFrame([[features.get(f, 0.0) for f in self.feature_names]], columns=self.feature_names)
+            X_df = X_df.fillna(0.0).replace([np.inf, -np.inf], 0.0)
+            X_scaled = self.scaler.transform(X_df)
 
             # Predict
-            prob = self.model.predict_proba(X_scaled)[0][1]  # P(profitable)
+            prob = float(self.model.predict_proba(X_scaled)[0][1])  # P(profitable)
             prediction = "ACCEPT" if prob >= config.ML_CONFIDENCE_THRESHOLD else "AVOID"
 
             # Generate explanation using feature importance
