@@ -38,6 +38,10 @@ Thumbs.db
 app_backup.py
 *.spec
 
+# Environment variables and secrets (Never commit!)
+.env
+.env.*
+
 # Logs & Cache
 *.log
 data/cache/

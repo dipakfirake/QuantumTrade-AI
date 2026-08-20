@@ -5,11 +5,13 @@ Official integration for Fyers API v3 supporting:
 - True tick-level Last Traded Quantity (LTQ) & Exchange Traded Quantity (ETQ)
 - Full 5-Level Bid/Ask Market Depth & Total Bid/Ask Quantities
 - Real-time WebSocket streaming via FyersDataSocket
-- Multi-symbol batch quote retrieval
+- Multi-threaded parallel batch quote retrieval (sub-second)
+- Fast parallel intraday & historical OHLCV download
 """
 import os
 import logging
 from typing import List, Dict, Optional, Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 from datetime import datetime
 
@@ -19,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class FyersProvider(DataProvider):
     """
-    Fyers API v3 Data Provider with WebSocket streaming and 5-level order book.
+    Fyers API v3 Data Provider with high-speed parallel fetching and WebSocket streaming.
     """
 
     def __init__(self, api_key: Optional[str] = None, access_token: Optional[str] = None):
@@ -73,20 +75,22 @@ class FyersProvider(DataProvider):
         quotes = self.get_quotes_batch([symbol])
         return quotes[0] if quotes else None
 
-    def get_quotes_batch(self, symbols: List[str], chunk_size: int = 50) -> List[Quote]:
+    def get_quotes_batch(self, symbols: List[str], chunk_size: int = 50, progress_callback=None) -> List[Quote]:
         """
-        Fetch real-time quotes in batches from Fyers API v3.
-        Fyers supports up to 50 symbols per batch request.
+        Fetch real-time quotes in parallel chunks from Fyers API v3.
         """
         if not self._client:
             return []
 
+        chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+        total_chunks = len(chunks)
         all_quotes = []
-        for i in range(0, len(symbols), chunk_size):
-            chunk = symbols[i:i + chunk_size]
+
+        def fetch_chunk(chunk_data):
+            idx, chunk = chunk_data
             fyers_symbols = [self._format_fyers_symbol(s) for s in chunk]
             symbol_str = ",".join(fyers_symbols)
-            
+            chunk_quotes = []
             try:
                 data = {"symbols": symbol_str}
                 response = self._client.quotes(data=data)
@@ -127,9 +131,20 @@ class FyersProvider(DataProvider):
                             total_ask_qty=tot_ask_qty,
                             timestamp=datetime.now().strftime("%H:%M:%S")
                         )
-                        all_quotes.append(q)
+                        chunk_quotes.append(q)
             except Exception as e:
                 logger.warning(f"Fyers batch quotes error: {e}")
+            return idx, chunk_quotes
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(fetch_chunk, (i, c)) for i, c in enumerate(chunks)]
+            scanned = 0
+            for future in as_completed(futures):
+                idx, chunk_quotes = future.result()
+                all_quotes.extend(chunk_quotes)
+                scanned += len(chunks[idx])
+                if progress_callback:
+                    progress_callback(scanned, len(symbols), idx + 1, total_chunks)
 
         return all_quotes
 
@@ -164,10 +179,11 @@ class FyersProvider(DataProvider):
             res = self._client.history(data=data)
             if isinstance(res, dict) and res.get("s") == "ok":
                 candles = res.get("candles", [])
-                df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
-                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
-                df.set_index("timestamp", inplace=True)
-                return df
+                if candles:
+                    df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
+                    df.set_index("timestamp", inplace=True)
+                    return df
         except Exception as e:
             logger.warning(f"Fyers intraday history error for {symbol}: {e}")
         return None
@@ -189,24 +205,33 @@ class FyersProvider(DataProvider):
             res = self._client.history(data=data)
             if isinstance(res, dict) and res.get("s") == "ok":
                 candles = res.get("candles", [])
-                df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
-                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
-                df.set_index("timestamp", inplace=True)
-                return df
+                if candles:
+                    df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
+                    df.set_index("timestamp", inplace=True)
+                    return df
         except Exception as e:
             logger.warning(f"Fyers historical error for {symbol}: {e}")
         return None
 
     def get_intraday_ohlcv_batch(self, symbols: List[str], interval: str = "5",
                                  period: str = "5d", progress_callback=None) -> Dict[str, pd.DataFrame]:
-        """Fetch intraday OHLCV for multiple symbols."""
+        """Fetch intraday OHLCV for multiple symbols in parallel."""
         results = {}
-        for i, s in enumerate(symbols):
-            df = self.get_intraday_ohlcv(s, interval=interval, period=period)
-            if df is not None:
-                results[s] = df
-            if progress_callback:
-                progress_callback(i + 1, len(symbols))
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_sym = {executor.submit(self.get_intraday_ohlcv, s, interval, period): s for s in symbols}
+            completed = 0
+            for future in as_completed(future_to_sym):
+                s = future_to_sym[future]
+                completed += 1
+                try:
+                    df = future.result()
+                    if df is not None:
+                        results[s] = df
+                except Exception:
+                    pass
+                if progress_callback:
+                    progress_callback(completed, len(symbols))
         return results
 
     def start_websocket_stream(self, symbols: List[str], on_tick_callback: Optional[Callable[[Quote], None]] = None):
@@ -247,7 +272,7 @@ class FyersProvider(DataProvider):
                             bid_price=bid,
                             bid_qty=tot_bid // 5 if tot_bid else 0,
                             ask_price=ask,
-                            ask_qty=tot_ask // 5 if tot_ask else 0,
+                            ask_qty=tot_ask // 5 if tot_ask_qty else 0,
                             total_bid_qty=tot_bid,
                             total_ask_qty=tot_ask,
                             timestamp=datetime.now().strftime("%H:%M:%S")
