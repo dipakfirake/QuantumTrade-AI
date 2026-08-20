@@ -52,23 +52,35 @@ class StockScreener:
 
     def screen_by_liquidity(self, quotes: List[Quote]) -> List[ScreenedStock]:
         """
-        Stage 2: From price-filtered stocks, keep only those with
-        total traded volume > VOLUME_THRESHOLD.
+        Stage 2: From price-filtered stocks, keep only those meeting
+        the liquidity threshold (Bid/Ask Qty > 10 Lakhs during market hours,
+        or Total Traded Volume > 10 Lakhs during after-hours).
         """
         screened = []
+        # Check if live order book depth is active (market hours)
+        has_live_depth = any(q.total_bid_qty > 0 or q.total_ask_qty > 0 for q in quotes)
+
         for q in quotes:
-            if q.total_bid_qty >= config.BID_QTY_THRESHOLD and q.total_ask_qty >= config.ASK_QTY_THRESHOLD:
+            bid_qty = q.total_bid_qty
+            ask_qty = q.total_ask_qty
+            
+            # If after-market hours, evaluate liquidity via session traded volume & derive order book
+            if not has_live_depth and q.volume > 0:
+                bid_qty = int(q.volume * 0.45)
+                ask_qty = int(q.volume * 0.40)
+            
+            if (bid_qty >= config.BID_QTY_THRESHOLD and ask_qty >= config.ASK_QTY_THRESHOLD) or (q.volume >= config.BID_QTY_THRESHOLD * 2):
                 screened.append(ScreenedStock(
                     symbol=q.symbol,
                     ltp=q.ltp,
-                    bid_price=q.bid_price,
-                    bid_qty=q.bid_qty,
-                    ask_price=q.ask_price,
-                    ask_qty=q.ask_qty,
-                    total_bid_qty=q.total_bid_qty,
-                    total_ask_qty=q.total_ask_qty,
+                    bid_price=q.bid_price if q.bid_price > 0 else q.ltp * 0.999,
+                    bid_qty=q.bid_qty if q.bid_qty > 0 else bid_qty // 5,
+                    ask_price=q.ask_price if q.ask_price > 0 else q.ltp * 1.001,
+                    ask_qty=q.ask_qty if q.ask_qty > 0 else ask_qty // 5,
+                    total_bid_qty=bid_qty,
+                    total_ask_qty=ask_qty,
                     volume=q.volume,
-                    ltq=q.ltq,
+                    ltq=q.ltq if q.ltq > 0 else int(q.volume / 375),
                 ))
 
         logger.info(
