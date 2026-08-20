@@ -46,8 +46,8 @@ def main():
             from data_provider.history_cache import _cache_path, _meta_path
             removed = 0
             for s in symbols:
-                p = _cache_path(s, config.YFINANCE_HISTORY_INTERVAL, config.YFINANCE_HISTORY_PERIOD)
-                m = _meta_path(s, config.YFINANCE_HISTORY_INTERVAL, config.YFINANCE_HISTORY_PERIOD)
+                p = _cache_path(s, config.HISTORICAL_INTERVAL, config.HISTORICAL_PERIOD)
+                m = _meta_path(s, config.HISTORICAL_INTERVAL, config.HISTORICAL_PERIOD)
                 for f in (p, m):
                     if os.path.exists(f):
                         os.remove(f)

@@ -49,24 +49,27 @@ def generate_training_data(symbols: List[str],
             # Prefer provider if given (allows broker historical endpoints)
             if provider is not None:
                 try:
-                    df = provider.get_historical_ohlcv(symbol, interval=config.YFINANCE_HISTORY_INTERVAL,
-                                                       period=config.YFINANCE_HISTORY_PERIOD)
+                    df = provider.get_historical_ohlcv(symbol, interval=config.HISTORICAL_INTERVAL,
+                                                       period=config.HISTORICAL_PERIOD)
                 except Exception:
                     df = None
             else:
                 df = None
 
-            # Fallback to cached yfinance download if provider didn't return data
+            # Fallback to cached download if provider didn't return data
             if (df is None or (hasattr(df, 'empty') and df.empty)):
                 if _get_cached_historical is not None:
-                    df = _get_cached_historical(symbol, interval=config.YFINANCE_HISTORY_INTERVAL,
-                                                 period=config.YFINANCE_HISTORY_PERIOD, ttl_hours=24)
+                    df = _get_cached_historical(symbol, interval=config.HISTORICAL_INTERVAL,
+                                                 period=config.HISTORICAL_PERIOD, ttl_hours=24)
                 if df is None or (hasattr(df, 'empty') and df.empty):
-                    ticker = yf.Ticker(f"{symbol}.NS")
-                    df = ticker.history(
-                        period=config.YFINANCE_HISTORY_PERIOD,
-                        interval=config.YFINANCE_HISTORY_INTERVAL,
-                    )
+                    try:
+                        ticker = yf.Ticker(f"{symbol}.NS")
+                        df = ticker.history(
+                            period=config.HISTORICAL_PERIOD,
+                            interval=config.HISTORICAL_INTERVAL,
+                        )
+                    except Exception:
+                        df = None
 
             if df is None or len(df) < config.SMMA_LONG + 10:
                 logger.debug(f"Insufficient historical bars for {symbol}")

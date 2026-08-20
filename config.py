@@ -1,6 +1,6 @@
 # =============================================================================
 # SSG Infotech — AI/ML Stock Market Screening & Analysis System
-# Configuration Constants
+# Configuration Constants (Fyers API v3 Institutional Engine)
 # =============================================================================
 
 # --- Screening Thresholds ---
@@ -21,13 +21,19 @@ ETQ_WINDOWS = [5, 20, 60]          # ETQ aggregation windows
 AVG_LTP_WINDOWS = [20, 60]         # Average LTP windows
 LTQ_WINDOWS = [2, 5, 20]           # LTQ averaging windows for ML features
 
-# --- Data Source ---
-YFINANCE_INTERVAL = "5m"           # Intraday candle interval (5m gives 375 candles in 5d for SMMA 120)
-YFINANCE_PERIOD = "5d"             # Lookback period for intraday data
-YFINANCE_HISTORY_PERIOD = "6mo"    # Historical period for ML training
-YFINANCE_HISTORY_INTERVAL = "1h"   # Historical candle interval for ML training
+# --- Data Source & Intraday Resolution ---
+INTRADAY_INTERVAL = "5m"           # 5-minute candle interval for SMMA 20/120
+INTRADAY_PERIOD = "5d"             # Lookback period for intraday data
+HISTORICAL_PERIOD = "6mo"          # Historical period for ML training
+HISTORICAL_INTERVAL = "1h"         # Historical candle interval for ML training
 
-NSE_REQUEST_DELAY = 1.0            # Seconds between NSE API calls (rate limiting)
+# Backwards compatibility aliases
+YFINANCE_INTERVAL = INTRADAY_INTERVAL
+YFINANCE_PERIOD = INTRADAY_PERIOD
+YFINANCE_HISTORY_PERIOD = HISTORICAL_PERIOD
+YFINANCE_HISTORY_INTERVAL = HISTORICAL_INTERVAL
+
+NSE_REQUEST_DELAY = 0.1            # Seconds between API calls
 NSE_BATCH_SIZE = 50                # Number of symbols per scan batch
 
 # --- ML Model ---
@@ -40,21 +46,13 @@ TRAINING_DATA_PATH = "data/historical_crossovers.csv"
 TRADE_HISTORY_PATH = "data/trade_history.csv"
 NSE_SYMBOLS_CACHE_PATH = "data/nse_symbols.csv"
 
-# --- RSI ---
+# --- Technical Indicators ---
 RSI_PERIOD = 14
-
-# --- ATR ---
 ATR_PERIOD = 14
 
-# --- ETQ / Provider Mode ---
-# Options: "broker" (use broker API for true LTQ/ETQ),
-#          "proxy"  (derive LTQ from minute-volume deltas via Yahoo Finance),
-#          "sim"    (pure simulation - only for offline demos)
-ETQ_MODE = "proxy"
+# --- Live Data Provider ---
+ETQ_MODE = "fyers"                 # Official Fyers API v3 & WebSocket
+USE_BROKER_ETQ = True
 
-# If True, expect a configured broker connector and API keys (Fyers/AngelOne).
-USE_BROKER_ETQ = False
-
-# Scan scope: "NIFTY500" (fast demo) or "FULL_NSE" (all symbols)
-SCAN_SCOPE = "NIFTY500"
-
+# Scan scope: "FULL_NSE" (all symbols) or "NIFTY500"
+SCAN_SCOPE = "FULL_NSE"

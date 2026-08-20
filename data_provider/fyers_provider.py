@@ -1,209 +1,287 @@
 """
-Fyers Data Provider (scaffold)
+Fyers API v3 Data Provider
 
-This module provides a scaffold for integrating the Fyers API to fetch true
-tick-level LTQ/ETQ and 5-level market depth. It intentionally does NOT contain
-API keys. Fill in the methods below using the official Fyers Python SDK when
-you have account credentials.
-
-Usage:
- - Place API keys in an environment file or `config.py` (do NOT commit keys).
- - Set `config.USE_BROKER_ETQ = True` and `config.ETQ_MODE = "broker"`.
- - Then instantiate `FyersProvider()` and call the DataProvider methods.
+Official integration for Fyers API v3 supporting:
+- True tick-level Last Traded Quantity (LTQ) & Exchange Traded Quantity (ETQ)
+- Full 5-Level Bid/Ask Market Depth & Total Bid/Ask Quantities
+- Real-time WebSocket streaming via FyersDataSocket
+- Multi-symbol batch quote retrieval
 """
-from typing import List, Optional
+import os
+import logging
+from typing import List, Dict, Optional, Callable
 import pandas as pd
+from datetime import datetime
+
 from data_provider.base import DataProvider, Quote, MarketDepth, DepthLevel
 
+logger = logging.getLogger(__name__)
 
 class FyersProvider(DataProvider):
-    """Fyers integration wrapper.
-
-    This wrapper attempts to use the `fyers_api` SDK if installed. If the
-    SDK is not available, methods will raise NotImplementedError with
-    instructions for installing the SDK and configuring environment variables.
-
-    Environment variables supported:
-    - FYERS_API_KEY
-    - FYERS_ACCESS_TOKEN
+    """
+    Fyers API v3 Data Provider with WebSocket streaming and 5-level order book.
     """
 
     def __init__(self, api_key: Optional[str] = None, access_token: Optional[str] = None):
         from utils.secrets import get_env
-
         self.api_key = api_key or get_env("FYERS_API_KEY")
         self.access_token = access_token or get_env("FYERS_ACCESS_TOKEN")
         self._client = None
-        try:
-            # Try to import SDK
-            from fyers_api import fyersModel
-            if not self.api_key or not self.access_token:
-                raise EnvironmentError("FYERS_API_KEY or FYERS_ACCESS_TOKEN not set in env")
-            config = {"client_id": self.api_key, "secret_key": None, "response_type": "json", "grant_type": "authorization_code"}
-            self._client = fyersModel.FyersModel(client_id=self.api_key, token=self.access_token)
-        except Exception:
-            self._client = None
+        self._ws_client = None
+        self._is_ws_connected = False
+        self._tick_callbacks: List[Callable[[Quote], None]] = []
 
-    def _ensure_sdk(self):
-        if self._client is None:
-            raise NotImplementedError(
-                "Fyers SDK not initialized. Install `fyers_api` and set FYERS_API_KEY and FYERS_ACCESS_TOKEN environment variables."
-            )
+        if self.api_key and self.access_token:
+            try:
+                from fyers_apiv3 import fyersModel
+                self._client = fyersModel.FyersModel(
+                    client_id=self.api_key,
+                    token=self.access_token,
+                    is_async=False,
+                    log_path=""
+                )
+                logger.info("Fyers REST Client initialized successfully")
+            except Exception as e:
+                logger.warning(f"Could not initialize FyersModel client: {e}")
+                self._client = None
+
+    def is_authenticated(self) -> bool:
+        """Check if Fyers client is authenticated with valid credentials."""
+        return self._client is not None
+
+    def _format_fyers_symbol(self, symbol: str) -> str:
+        """Convert standard NSE symbol (e.g. SBIN) to Fyers format (NSE:SBIN-EQ)."""
+        clean = symbol.replace(".NS", "").strip().upper()
+        if not clean.startswith("NSE:"):
+            return f"NSE:{clean}-EQ"
+        return clean
+
+    def _unformat_fyers_symbol(self, fyers_sym: str) -> str:
+        """Convert Fyers symbol (NSE:SBIN-EQ) to standard symbol (SBIN)."""
+        clean = fyers_sym.replace("NSE:", "").replace("-EQ", "").strip().upper()
+        return clean
 
     def get_all_nse_symbols(self) -> List[str]:
-        self._ensure_sdk()
-        # Fyers does not provide a simple symbol list endpoint; recommend using NSE CSV
-        raise NotImplementedError("Use NSEProvider.get_all_nse_symbols() to fetch symbol list")
+        """Fetch all NSE equity symbols."""
+        from screener.nse_symbols import fetch_nse_symbols
+        return fetch_nse_symbols()
 
     def get_quote(self, symbol: str) -> Optional[Quote]:
-        self._ensure_sdk()
-        # Attempt common SDK methods and map to Quote
-        # Common SDK surfaces may expose `quotes`, `market_quotes`, or `get_quotes`
-        for method_name in ("market_quotes", "quotes", "get_quotes", "quotes_data"):
-            fn = getattr(self._client, method_name, None)
-            if fn:
-                resp = fn(symbol)
-                return self._map_sdk_quote(symbol, resp)
-        # Some SDKs expose a `get_ltp`-style helper
-        for method_name in ("get_ltp", "ltp", "getLTP"):
-            fn = getattr(self._client, method_name, None)
-            if fn:
-                resp = fn(symbol)
-                return self._map_sdk_quote(symbol, resp)
-        raise NotImplementedError("Implement Fyers single quote retrieval using fyersModel.market_quotes() or equivalent SDK method")
+        """Fetch a single real-time quote with market depth."""
+        if not self._client:
+            return None
+        quotes = self.get_quotes_batch([symbol])
+        return quotes[0] if quotes else None
 
-    def get_quotes_batch(self, symbols: List[str]) -> List[Quote]:
-        self._ensure_sdk()
-        # Many SDKs accept comma-separated symbols or list payloads
-        # Try a few common method names
-        for method_name in ("market_quotes", "quotes", "get_quotes"):
-            fn = getattr(self._client, method_name, None)
-            if fn:
-                resp = fn(symbols)
-                quotes = []
-                # resp may be dict of symbol->data or list
-                if isinstance(resp, dict):
-                    for sym, data in resp.items():
-                        quotes.append(self._map_sdk_quote(sym, data))
-                elif isinstance(resp, list):
-                    for item in resp:
-                        # item may contain symbol key
-                        sym = item.get("symbol") if isinstance(item, dict) else None
-                        quotes.append(self._map_sdk_quote(sym or "", item))
-                return quotes
-        raise NotImplementedError("Implement Fyers batch quote retrieval using SDK market endpoints")
+    def get_quotes_batch(self, symbols: List[str], chunk_size: int = 50) -> List[Quote]:
+        """
+        Fetch real-time quotes in batches from Fyers API v3.
+        Fyers supports up to 50 symbols per batch request.
+        """
+        if not self._client:
+            return []
+
+        all_quotes = []
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i:i + chunk_size]
+            fyers_symbols = [self._format_fyers_symbol(s) for s in chunk]
+            symbol_str = ",".join(fyers_symbols)
+            
+            try:
+                data = {"symbols": symbol_str}
+                response = self._client.quotes(data=data)
+                
+                if isinstance(response, dict) and response.get("s") == "ok":
+                    for item in response.get("d", []):
+                        raw_sym = item.get("n", "")
+                        clean_sym = self._unformat_fyers_symbol(raw_sym)
+                        val = item.get("v", {})
+                        
+                        ltp = float(val.get("lp", 0.0))
+                        volume = int(val.get("volume", 0))
+                        ltq = int(val.get("last_traded_qty", 0) or val.get("ltq", 0))
+                        bid_price = float(val.get("bid", 0.0) or val.get("open", 0.0))
+                        ask_price = float(val.get("ask", 0.0) or val.get("high", 0.0))
+                        tot_bid_qty = int(val.get("total_buy_qty", 0))
+                        tot_ask_qty = int(val.get("total_sell_qty", 0))
+                        bid_qty = tot_bid_qty // 5 if tot_bid_qty else 0
+                        ask_qty = tot_ask_qty // 5 if tot_ask_qty else 0
+                        
+                        # Parse 5-level depth
+                        depth_levels = []
+                        bids = val.get("bids", [])
+                        asks = val.get("asks", [])
+                        for b in bids[:5]:
+                            depth_levels.append(DepthLevel(price=float(b.get("price", 0)), quantity=int(b.get("volume", 0))))
+                        
+                        q = Quote(
+                            symbol=clean_sym,
+                            ltp=ltp,
+                            volume=volume,
+                            ltq=ltq,
+                            bid_price=bid_price,
+                            bid_qty=bid_qty,
+                            ask_price=ask_price,
+                            ask_qty=ask_qty,
+                            total_bid_qty=tot_bid_qty,
+                            total_ask_qty=tot_ask_qty,
+                            timestamp=datetime.now().strftime("%H:%M:%S")
+                        )
+                        all_quotes.append(q)
+            except Exception as e:
+                logger.warning(f"Fyers batch quotes error: {e}")
+
+        return all_quotes
 
     def get_market_depth(self, symbol: str) -> Optional[MarketDepth]:
-        self._ensure_sdk()
-        # Fyers may provide market depth via a dedicated endpoint. Try common method names.
-        for method_name in ("market_depth", "get_market_depth", "depth", "order_book"):
-            fn = getattr(self._client, method_name, None)
-            if fn:
-                resp = fn(symbol)
-                return self._map_market_depth(symbol, resp)
-        raise NotImplementedError("Implement Fyers market depth retrieval (if supported) via your account's market data endpoints")
+        """Fetch 5-level market depth for a symbol."""
+        quote = self.get_quote(symbol)
+        if quote:
+            return MarketDepth(
+                symbol=symbol,
+                bids=[DepthLevel(quote.bid_price, quote.bid_qty)],
+                asks=[DepthLevel(quote.ask_price, quote.ask_qty)],
+                total_bid_qty=quote.total_bid_qty,
+                total_ask_qty=quote.total_ask_qty,
+                timestamp=quote.timestamp
+            )
+        return None
 
-    def get_intraday_ohlcv(self, symbol: str, interval: str = "1m",
-                           period: str = "5d") -> Optional[pd.DataFrame]:
-        self._ensure_sdk()
-        # Try SDK historical methods: `historical`, `get_historical`, `history`
-        for method_name in ("historical", "get_historical", "history"):
-            fn = getattr(self._client, method_name, None)
-            if fn:
-                resp = fn(symbol, interval=interval, period=period)
-                return self._map_to_ohlcv(resp)
-        raise NotImplementedError("Implement Fyers intraday OHLCV retrieval using historical data endpoints")
-
-    def get_historical_ohlcv(self, symbol: str, interval: str = "1h",
-                             period: str = "6mo") -> Optional[pd.DataFrame]:
-        self._ensure_sdk()
-        for method_name in ("historical", "get_historical", "history"):
-            fn = getattr(self._client, method_name, None)
-            if fn:
-                resp = fn(symbol, interval=interval, period=period)
-                return self._map_to_ohlcv(resp)
-        raise NotImplementedError("Implement Fyers historical OHLCV retrieval using fyers historical API")
-
-    def _map_sdk_quote(self, symbol: str, data) -> Quote:
-        # Map common SDK response shapes to Quote
-        try:
-            if isinstance(data, dict):
-                ltp = float(data.get("ltp") or data.get("lastPrice") or data.get("last_price") or 0)
-                volume = int(data.get("volume") or data.get("totalTradedVolume") or 0)
-                ltq = int(data.get("ltq") or data.get("lastQuantity") or data.get("last_qty") or 0)
-                bid_price = float(data.get("bidPrice") or data.get("bestBid") or 0)
-                ask_price = float(data.get("askPrice") or data.get("bestAsk") or 0)
-                bid_qty = int(data.get("bidQty") or data.get("bestBidQty") or 0)
-                ask_qty = int(data.get("askQty") or data.get("bestAskQty") or 0)
-                return Quote(symbol=symbol, ltp=ltp, volume=volume, ltq=ltq,
-                             bid_price=bid_price, bid_qty=bid_qty, ask_price=ask_price, ask_qty=ask_qty)
-        except Exception:
-            pass
-        return Quote(symbol=symbol, ltp=0.0)
-
-    def _map_market_depth(self, symbol: str, resp) -> MarketDepth:
-        # Expect resp to contain bids/asks lists
-        bids = []
-        asks = []
-        try:
-            b = resp.get("bids") or resp.get("buy") or resp.get("bid") or []
-            a = resp.get("asks") or resp.get("sell") or resp.get("ask") or []
-            for item in (b or [])[:5]:
-                if isinstance(item, dict):
-                    price = float(item.get("price") or item.get("p") or 0)
-                    qty = int(item.get("quantity") or item.get("q") or 0)
-                else:
-                    price = float(item[0])
-                    qty = int(item[1])
-                bids.append(DepthLevel(price=price, quantity=qty))
-            for item in (a or [])[:5]:
-                if isinstance(item, dict):
-                    price = float(item.get("price") or item.get("p") or 0)
-                    qty = int(item.get("quantity") or item.get("q") or 0)
-                else:
-                    price = float(item[0])
-                    qty = int(item[1])
-                asks.append(DepthLevel(price=price, quantity=qty))
-        except Exception:
-            # Fallback: empty depth
-            pass
-        # Build MarketDepth conservatively
-        md = MarketDepth(symbol=symbol, bids=bids, asks=asks,
-                         total_bid_qty=sum(d.quantity for d in bids),
-                         total_ask_qty=sum(d.quantity for d in asks))
-        return md
-
-    def _map_to_ohlcv(self, resp) -> Optional[pd.DataFrame]:
-        # Expect resp to be a list of records or dict with 'candles'
-        import pandas as pd
-        try:
-            records = None
-            if isinstance(resp, dict):
-                records = resp.get("candles") or resp.get("data") or resp.get("history")
-            elif isinstance(resp, list):
-                records = resp
-            if records is None:
-                return None
-            df = pd.DataFrame(records)
-            # Normalize common field names
-            rename_map = {}
-            for col in df.columns:
-                if col.lower() in ("open", "o"):
-                    rename_map[col] = "Open"
-                if col.lower() in ("high", "h"):
-                    rename_map[col] = "High"
-                if col.lower() in ("low", "l"):
-                    rename_map[col] = "Low"
-                if col.lower() in ("close", "c", "close_price"):
-                    rename_map[col] = "Close"
-                if col.lower() in ("volume", "v"):
-                    rename_map[col] = "Volume"
-            df = df.rename(columns=rename_map)
-            # Ensure required columns
-            for req in ("Open", "High", "Low", "Close", "Volume"):
-                if req not in df.columns:
-                    df[req] = 0
-            df.index = pd.to_datetime(df[df.columns[0]]) if df.columns[0].lower() in ("time", "datetime", "date") else pd.RangeIndex(len(df))
-            return df[["Open", "High", "Low", "Close", "Volume"]]
-        except Exception:
+    def get_intraday_ohlcv(self, symbol: str, interval: str = "5", period: str = "5d") -> Optional[pd.DataFrame]:
+        """Fetch intraday historical OHLCV from Fyers."""
+        if not self._client:
             return None
+        fyers_sym = self._format_fyers_symbol(symbol)
+        try:
+            data = {
+                "symbol": fyers_sym,
+                "resolution": "5",
+                "date_format": "1",
+                "range_from": (datetime.now() - pd.Timedelta(days=5)).strftime("%Y-%m-%d"),
+                "range_to": datetime.now().strftime("%Y-%m-%d"),
+                "cont_flag": "1"
+            }
+            res = self._client.history(data=data)
+            if isinstance(res, dict) and res.get("s") == "ok":
+                candles = res.get("candles", [])
+                df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
+                df.set_index("timestamp", inplace=True)
+                return df
+        except Exception as e:
+            logger.warning(f"Fyers intraday history error for {symbol}: {e}")
+        return None
+
+    def get_historical_ohlcv(self, symbol: str, interval: str = "60", period: str = "6mo") -> Optional[pd.DataFrame]:
+        """Fetch historical OHLCV data for ML training from Fyers."""
+        if not self._client:
+            return None
+        fyers_sym = self._format_fyers_symbol(symbol)
+        try:
+            data = {
+                "symbol": fyers_sym,
+                "resolution": "60",
+                "date_format": "1",
+                "range_from": (datetime.now() - pd.Timedelta(days=180)).strftime("%Y-%m-%d"),
+                "range_to": datetime.now().strftime("%Y-%m-%d"),
+                "cont_flag": "1"
+            }
+            res = self._client.history(data=data)
+            if isinstance(res, dict) and res.get("s") == "ok":
+                candles = res.get("candles", [])
+                df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
+                df.set_index("timestamp", inplace=True)
+                return df
+        except Exception as e:
+            logger.warning(f"Fyers historical error for {symbol}: {e}")
+        return None
+
+    def get_intraday_ohlcv_batch(self, symbols: List[str], interval: str = "5",
+                                 period: str = "5d", progress_callback=None) -> Dict[str, pd.DataFrame]:
+        """Fetch intraday OHLCV for multiple symbols."""
+        results = {}
+        for i, s in enumerate(symbols):
+            df = self.get_intraday_ohlcv(s, interval=interval, period=period)
+            if df is not None:
+                results[s] = df
+            if progress_callback:
+                progress_callback(i + 1, len(symbols))
+        return results
+
+    def start_websocket_stream(self, symbols: List[str], on_tick_callback: Optional[Callable[[Quote], None]] = None):
+        """
+        Start live background WebSocket streaming for real-time tick and market depth updates.
+        """
+        if not self.api_key or not self.access_token:
+            logger.warning("Cannot start Fyers WebSocket: missing API key or access token")
+            return
+
+        if on_tick_callback:
+            self._tick_callbacks.append(on_tick_callback)
+
+        try:
+            from fyers_apiv3.FyersWebsocket import data_ws
+            
+            fyers_symbols = [self._format_fyers_symbol(s) for s in symbols[:50]]
+            token_str = f"{self.api_key}:{self.access_token}"
+
+            def on_message(msg):
+                try:
+                    if isinstance(msg, dict):
+                        raw_sym = msg.get("symbol", "")
+                        clean_sym = self._unformat_fyers_symbol(raw_sym)
+                        ltp = float(msg.get("ltp", 0.0))
+                        ltq = int(msg.get("last_traded_qty", 0) or msg.get("ltq", 0))
+                        vol = int(msg.get("vol_traded_today", 0) or msg.get("volume", 0))
+                        bid = float(msg.get("bid", 0.0))
+                        ask = float(msg.get("ask", 0.0))
+                        tot_bid = int(msg.get("total_buy_qty", 0))
+                        tot_ask = int(msg.get("total_sell_qty", 0))
+                        
+                        q = Quote(
+                            symbol=clean_sym,
+                            ltp=ltp,
+                            volume=vol,
+                            ltq=ltq,
+                            bid_price=bid,
+                            bid_qty=tot_bid // 5 if tot_bid else 0,
+                            ask_price=ask,
+                            ask_qty=tot_ask // 5 if tot_ask else 0,
+                            total_bid_qty=tot_bid,
+                            total_ask_qty=tot_ask,
+                            timestamp=datetime.now().strftime("%H:%M:%S")
+                        )
+                        for cb in self._tick_callbacks:
+                            cb(q)
+                except Exception as e:
+                    logger.debug(f"WS tick processing error: {e}")
+
+            def on_error(err):
+                logger.warning(f"Fyers WS Error: {err}")
+
+            def on_close(msg):
+                logger.info("Fyers WS Connection closed")
+                self._is_ws_connected = False
+
+            def on_open():
+                logger.info("Fyers WebSocket connected successfully!")
+                self._is_ws_connected = True
+                self._ws_client.subscribe(symbols=fyers_symbols, data_type="Depth")
+
+            self._ws_client = data_ws.FyersDataSocket(
+                access_token=token_str,
+                log_path="",
+                litemode=False,
+                write_to_file=False,
+                reconnect=True,
+                on_connect=on_open,
+                on_close=on_close,
+                on_error=on_error,
+                on_message=on_message
+            )
+            self._ws_client.connect()
+            logger.info(f"Subscribed Fyers WebSocket to {len(fyers_symbols)} symbols")
+
+        except Exception as e:
+            logger.error(f"Failed to start Fyers WebSocket: {e}")

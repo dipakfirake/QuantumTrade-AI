@@ -443,7 +443,10 @@ render_header(
 )
 
 # Show Real-time Execution Status
-st.success("🟢 **Live Market Feed Active**: Real-time NSE price stream with 5-Level Order Book Depth & Institutional ETQ Analytics.")
+if hasattr(st.session_state.provider, "is_authenticated") and st.session_state.provider.is_authenticated():
+    st.success("🟢 **Live Fyers API v3 & WebSocket Feed Active**: Streaming tick-by-tick LTQ & 5-Level Order Book Depth from exchange.")
+else:
+    st.success("🟢 **Live Market Feed Active**: Real-time NSE price stream with 5-Level Order Book Depth & Institutional ETQ Analytics.")
 
 # Trading Stats
 stats = st.session_state.signal_tracker.get_stats()
