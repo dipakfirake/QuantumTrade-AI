@@ -6,8 +6,8 @@ __pycache__/
 .Python
 env/
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -33,12 +33,6 @@ ENV/
 *.swo
 .DS_Store
 Thumbs.db
-
-# Media / Recordings (large files)
-*.mp4
-*.avi
-*.mkv
-*.webm
 
 # Temporary backups & build specs
 app_backup.py
